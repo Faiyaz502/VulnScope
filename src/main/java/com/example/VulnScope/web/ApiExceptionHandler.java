@@ -6,9 +6,19 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 
 @RestControllerAdvice
 public class ApiExceptionHandler {
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    ProblemDetail handleValidationException(MethodArgumentNotValidException ignored) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, "Request validation failed.");
+        problem.setTitle("Invalid request");
+        problem.setProperty("timestamp", Instant.now());
+        problem.setProperty("errorCode", "VALIDATION_FAILED");
+        return problem;
+    }
 
     @ExceptionHandler(ApiException.class)
     ProblemDetail handleApiException(ApiException exception) {

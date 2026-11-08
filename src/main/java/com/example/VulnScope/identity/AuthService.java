@@ -6,8 +6,10 @@ import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.HexFormat;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.List;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -88,6 +90,27 @@ public class AuthService {
         UserAccount user = users.findById(principal.userId()).orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "AUTHENTICATION_REQUIRED", "Authentication is required."));
         OrganizationMembership membership = memberships.findByOrganizationIdAndUserId(principal.organizationId(), principal.userId()).orElseThrow(() -> new ApiException(HttpStatus.FORBIDDEN, "ORGANIZATION_ACCESS_DENIED", "Organization access is not available."));
         return new SessionLookup(null, user, membership);
+    }
+
+    @Transactional(readOnly = true)
+    public List<AuthDtos.OrganizationResponse> organizationsFor(AuthenticatedUser principal) {
+        if (principal == null) throw new ApiException(HttpStatus.UNAUTHORIZED, "AUTHENTICATION_REQUIRED", "Authentication is required.");
+        return memberships.findByUserId(principal.userId()).stream()
+            .map(membership -> organizations.findById(membership.getOrganizationId())
+                .map(org -> new AuthDtos.OrganizationResponse(org.getId(), org.getName(), membership.getRole()))
+                .orElse(null))
+            .filter(java.util.Objects::nonNull)
+            .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public AuthDtos.OrganizationResponse organizationFor(AuthenticatedUser principal, UUID organizationId) {
+        if (principal == null) throw new ApiException(HttpStatus.UNAUTHORIZED, "AUTHENTICATION_REQUIRED", "Authentication is required.");
+        OrganizationMembership membership = memberships.findByOrganizationIdAndUserId(organizationId, principal.userId())
+            .orElseThrow(() -> new ApiException(HttpStatus.FORBIDDEN, "ORGANIZATION_ACCESS_DENIED", "Organization access is not available."));
+        Organization organization = organizations.findById(organizationId)
+            .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "ORGANIZATION_NOT_FOUND", "Organization was not found."));
+        return new AuthDtos.OrganizationResponse(organization.getId(), organization.getName(), membership.getRole());
     }
 
     private SessionResult createSession(UserAccount user, Organization organization, Role role) {
