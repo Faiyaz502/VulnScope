@@ -35,6 +35,21 @@ public class AuthController {
         return issue(authService.login(request, clientIp(http)), response);
     }
 
+    @PostMapping("/password-reset/request")
+    public AuthDtos.PasswordResetResponse requestPasswordReset(@Valid @RequestBody AuthDtos.PasswordResetRequest request, HttpServletRequest http) {
+        authService.requestPasswordReset(request, clientIp(http));
+        return new AuthDtos.PasswordResetResponse("If the account exists, password reset instructions will be sent.");
+    }
+
+    @PostMapping("/password-reset/confirm")
+    public void confirmPasswordReset(@Valid @RequestBody AuthDtos.PasswordResetConfirmRequest request) { authService.confirmPasswordReset(request); }
+
+    @PostMapping("/mfa/enroll")
+    public AuthDtos.MfaEnrollmentResponse enrollMfa(@AuthenticationPrincipal AuthenticatedUser principal) { return authService.beginMfa(principal); }
+
+    @PostMapping("/mfa/verify")
+    public void verifyMfa(@AuthenticationPrincipal AuthenticatedUser principal, @Valid @RequestBody AuthDtos.MfaCodeRequest request) { authService.verifyMfa(principal, request); }
+
     @PostMapping("/logout")
     public void logout(@CookieValue(name=SessionAuthenticationFilter.COOKIE_NAME, required=false) String token, HttpServletResponse response) {
         authService.logout(token);
