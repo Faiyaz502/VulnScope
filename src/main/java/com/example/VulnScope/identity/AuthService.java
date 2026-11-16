@@ -10,6 +10,8 @@ import java.util.HexFormat;
 import java.util.Locale;
 import java.util.UUID;
 import java.util.List;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -29,12 +31,13 @@ public class AuthService {
     private final AuditEventRepository auditEvents;
     private final PasswordEncoder passwordEncoder;
     private final LoginRateLimiter rateLimiter;
+    private final PasswordResetTokenRepository resetTokens;
 
     public AuthService(UserAccountRepository users, OrganizationRepository organizations, MembershipRepository memberships,
                        AuthSessionRepository sessions, AuditEventRepository auditEvents, PasswordEncoder passwordEncoder,
-                       LoginRateLimiter rateLimiter) {
+                       LoginRateLimiter rateLimiter, PasswordResetTokenRepository resetTokens) {
         this.users=users; this.organizations=organizations; this.memberships=memberships; this.sessions=sessions;
-        this.auditEvents=auditEvents; this.passwordEncoder=passwordEncoder; this.rateLimiter=rateLimiter;
+        this.auditEvents=auditEvents; this.passwordEncoder=passwordEncoder; this.rateLimiter=rateLimiter; this.resetTokens=resetTokens;
     }
 
     @Transactional
@@ -58,6 +61,9 @@ public class AuthService {
             rateLimiter.recordFailure(ipAddress);
             throw new ApiException(HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", "Invalid email or password.");
         }
+        if (user.isMfaEnabled() && !validMfaCode(user.getMfaSecret(), request.mfaCode())) {
+            throw new ApiException(HttpStatus.UNAUTHORIZED, "MFA_REQUIRED", "A valid authentication code is required.");
+        }
         OrganizationMembership membership = memberships.findByUserId(user.getId()).stream().findFirst()
             .orElseThrow(() -> new ApiException(HttpStatus.FORBIDDEN, "NO_ORGANIZATION", "The account has no active organization."));
         rateLimiter.clear(ipAddress);
@@ -70,6 +76,56 @@ public class AuthService {
     public void logout(String rawToken) {
         if (rawToken == null || rawToken.isBlank()) return;
         sessions.findByTokenHash(hash(rawToken)).ifPresent(session -> { session.revoke(); sessions.save(session); });
+    }
+
+    @Transactional
+    public void requestPasswordReset(AuthDtos.PasswordResetRequest request, String ipAddress) {
+        users.findByEmail(normalizeEmail(request.email())).ifPresent(user -> {
+            byte[] bytes = new byte[32]; RANDOM.nextBytes(bytes);
+            String token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+            resetTokens.save(new PasswordResetToken(UUID.randomUUID(), user.getId(), hash(token), Instant.now().plus(Duration.ofMinutes(30))));
+            auditEvents.save(new AuditEvent(null, user.getId(), "PASSWORD_RESET_REQUESTED", ipAddress, null));
+            // Delivery is intentionally delegated to the notification module; the raw token is never returned or logged here.
+        });
+    }
+
+    @Transactional
+    public void confirmPasswordReset(AuthDtos.PasswordResetConfirmRequest request) {
+        PasswordResetToken reset = resetTokens.findByTokenHash(hash(request.token())).orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "INVALID_RESET_TOKEN", "The password reset link is invalid or expired."));
+        if (!reset.isUsable(Instant.now())) throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_RESET_TOKEN", "The password reset link is invalid or expired.");
+        UserAccount user = users.findById(reset.getUserId()).orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "INVALID_RESET_TOKEN", "The password reset link is invalid or expired."));
+        user.changePassword(passwordEncoder.encode(request.newPassword()));
+        users.save(user); reset.markUsed(); resetTokens.save(reset);
+        sessions.findAll().stream().filter(session -> session.getUserId().equals(user.getId())).forEach(session -> { session.revoke(); sessions.save(session); });
+    }
+
+    @Transactional
+    public AuthDtos.MfaEnrollmentResponse beginMfa(AuthenticatedUser principal) {
+        UserAccount user = users.findById(principal.userId()).orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "AUTHENTICATION_REQUIRED", "Authentication is required."));
+        byte[] secret = new byte[20]; RANDOM.nextBytes(secret);
+        String encoded = Base64.getEncoder().withoutPadding().encodeToString(secret);
+        user.stageMfa(encoded); users.save(user);
+        return new AuthDtos.MfaEnrollmentResponse(encoded, "VulnScope", user.getEmail());
+    }
+
+    @Transactional
+    public void verifyMfa(AuthenticatedUser principal, AuthDtos.MfaCodeRequest request) {
+        UserAccount user = users.findById(principal.userId()).orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "AUTHENTICATION_REQUIRED", "Authentication is required."));
+        if (user.getMfaSecret() == null || !validMfaCode(user.getMfaSecret(), request.code())) throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_MFA_CODE", "The authentication code is invalid.");
+        user.enableMfa(user.getMfaSecret()); users.save(user);
+    }
+
+    private boolean validMfaCode(String secret, String code) {
+        if (secret == null || code == null || !code.matches("\\d{6}")) return false;
+        try {
+            byte[] key = Base64.getDecoder().decode(secret);
+            long counter = Instant.now().getEpochSecond() / 30;
+            byte[] data = new byte[8]; for (int i = 7; i >= 0; i--) { data[i] = (byte) counter; counter >>>= 8; }
+            Mac mac = Mac.getInstance("HmacSHA1"); mac.init(new SecretKeySpec(key, "HmacSHA1")); byte[] digest = mac.doFinal(data);
+            int offset = digest[digest.length - 1] & 0xf;
+            int value = ((digest[offset] & 0x7f) << 24 | (digest[offset + 1] & 0xff) << 16 | (digest[offset + 2] & 0xff) << 8 | (digest[offset + 3] & 0xff)) % 1_000_000;
+            return String.format("%06d", value).equals(code);
+        } catch (Exception ignored) { return false; }
     }
 
     @Transactional(readOnly = true)
