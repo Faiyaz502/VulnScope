@@ -15,12 +15,20 @@ public class UserAccount {
     @Column(name = "password_hash", nullable = false, length = 255) private String passwordHash;
     @Column(name = "display_name", nullable = false, length = 120) private String displayName;
     @Column(nullable = false) private boolean enabled;
+    @Column(name = "mfa_enabled", nullable = false) private boolean mfaEnabled;
+    @Column(name = "mfa_secret", length = 512) private String mfaSecret;
     @Column(name = "created_at", nullable = false) private Instant createdAt;
     protected UserAccount() { }
-    public UserAccount(UUID id, String email, String passwordHash, String displayName) { this.id=id; this.email=email; this.passwordHash=passwordHash; this.displayName=displayName; this.enabled=true; this.createdAt=Instant.now(); }
+    public UserAccount(UUID id, String email, String passwordHash, String displayName) { this.id=id; this.email=email; this.passwordHash=passwordHash; this.displayName=displayName; this.enabled=true; this.mfaEnabled=false; this.createdAt=Instant.now(); }
     public UUID getId() { return id; }
     public String getEmail() { return email; }
     public String getPasswordHash() { return passwordHash; }
     public String getDisplayName() { return displayName; }
     public boolean isEnabled() { return enabled; }
+    public boolean isMfaEnabled() { return mfaEnabled; }
+    public String getMfaSecret() { return mfaSecret; }
+    public void changePassword(String passwordHash) { this.passwordHash = passwordHash; }
+    public void enableMfa(String secret) { this.mfaSecret = secret; this.mfaEnabled = true; }
+    public void stageMfa(String secret) { this.mfaSecret = secret; this.mfaEnabled = false; }
+    public void disableMfa() { this.mfaSecret = null; this.mfaEnabled = false; }
 }
